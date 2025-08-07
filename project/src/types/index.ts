@@ -10,7 +10,7 @@ export interface User {
 }
 
 export interface Role {
-  id: string;
+  id: number;
   name: string;
   description: string;
   groups: Group[];
@@ -19,7 +19,7 @@ export interface Role {
 }
 
 export interface Group {
-  id: string;
+  id: number;
   name: string;
   description: string;
   applications: Application[];
@@ -27,7 +27,7 @@ export interface Group {
 }
 
 export interface Application {
-  id: string;
+  id: number;
   name: string;
   description: string;
   status: 'active' | 'inactive' | 'maintenance';
@@ -61,7 +61,7 @@ export interface CreateRoleRequest {
 export interface CreateGroupRequest {
   name: string;
   description: string;
-  applicationIds: string[];
+  applicationIds: number[];
 }
 
 export interface CreateApplicationRequest {

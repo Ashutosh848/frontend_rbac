@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { User, Role, Group, CreateUserRequest } from '../../types';
-import { mockApi } from '../../services/mockApi';
+import { User, Role, Group } from '../../types/types';
+import { fetchRoles, fetchGroups, createUser, updateUser } from '../../services/api';
 
 interface UserFormProps {
   user?: User;
@@ -13,13 +13,15 @@ export const UserForm: React.FC<UserFormProps> = ({ user, onSave, onCancel }) =>
     name: '',
     email: '',
     password: '',
-    roleIds: [] as string[],
-    groupIds: [] as string[]
+    status: 'active' as 'active' | 'inactive',
+    role_ids: [] as number[],
+    group_ids: [] as number[]
   });
   const [roles, setRoles] = useState<Role[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [availableGroups, setAvailableGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingRoles, setLoadingRoles] = useState(true);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -29,42 +31,99 @@ export const UserForm: React.FC<UserFormProps> = ({ user, onSave, onCancel }) =>
         name: user.name,
         email: user.email,
         password: '', // Don't pre-fill password for editing
-        roleIds: user.roles.map(r => r.id),
-        groupIds: user.groups.map(g => g.id)
+        status: user.status,
+        role_ids: user.role_ids,
+        group_ids: user.group_ids
       });
     }
   }, [user]);
 
   useEffect(() => {
-    if (formData.roleIds.length > 0) {
-      loadGroupsForRoles(formData.roleIds);
-    } else {
-      setAvailableGroups([]);
+    loadRoles();
+    if (user) {
+      setFormData({
+        name: user.name,
+        email: user.email,
+        password: '', // Don't pre-fill password for editing
+        status: user.status,
+        role_ids: user.role_ids || [],  // <-- fallback added here
+        group_ids: user.group_ids || [] // <-- and here
+      });
     }
-  }, [formData.roleIds]);
+  }, [user]);
+
 
   const loadRoles = async () => {
+    setLoadingRoles(true);
     try {
-      const data = await mockApi.getRoles();
-      setRoles(data);
-    } catch (error) {
+      const data = await fetchRoles();
+      console.log('Raw roles response:', data);
+      
+      // Handle paginated response (Django REST Framework format)
+      if (data && typeof data === 'object' && Array.isArray(data.results)) {
+        setRoles(data.results);
+        console.log('Set roles from paginated response:', data.results.length, 'roles');
+        // Clear any previous errors
+        setErrors(prev => {
+          const newErrors = { ...prev };
+          delete newErrors.roles;
+          return newErrors;
+        });
+      } 
+      // Handle direct array response
+      else if (Array.isArray(data)) {
+        setRoles(data);
+        console.log('Set roles from direct array:', data.length, 'roles');
+        setErrors(prev => {
+          const newErrors = { ...prev };
+          delete newErrors.roles;
+          return newErrors;
+        });
+      }
+      else {
+        console.error('Roles data is not in expected format:', data);
+        setRoles([]);
+        setErrors(prev => ({ ...prev, roles: `Unexpected data format. Received: ${typeof data}` }));
+      }
+    } catch (error: any) {
       console.error('Failed to load roles:', error);
+      console.error('Error response:', error.response?.data);
+      setRoles([]);
+      setErrors(prev => ({ ...prev, roles: `Failed to load roles: ${error.response?.status || 'Network error'}` }));
+    } finally {
+      setLoadingRoles(false);
     }
   };
 
-  const loadGroupsForRoles = async (roleIds: string[]) => {
+  const loadGroupsForRoles = async (roleIds: number[]) => {
     try {
-      const allGroups = await mockApi.getGroups();
+      const data = await fetchGroups();
+      console.log('Raw groups response:', data);
+      
+      let allGroups: Group[] = [];
+      
+      // Handle paginated response (Django REST Framework format)
+      if (data && typeof data === 'object' && Array.isArray(data.results)) {
+        allGroups = data.results;
+      } 
+      // Handle direct array response
+      else if (Array.isArray(data)) {
+        allGroups = data;
+      } else {
+        console.error('Groups data is not in expected format:', data);
+        setAvailableGroups([]);
+        return;
+      }
+
       // Filter groups that are available to the selected roles
       const filteredGroups = allGroups.filter(group =>
-        roleIds.some(roleId => {
-          const role = roles.find(r => r.id === roleId);
-          return role && role.groups.some(g => g.id === group.id);
-        })
+        roleIds.some(roleId => group.role_ids.includes(roleId))
       );
       setAvailableGroups(filteredGroups);
+      console.log('Filtered groups for roles:', filteredGroups.length, 'groups');
     } catch (error) {
       console.error('Failed to load groups:', error);
+      setAvailableGroups([]);
     }
   };
 
@@ -87,8 +146,8 @@ export const UserForm: React.FC<UserFormProps> = ({ user, onSave, onCancel }) =>
       newErrors.password = 'Password must be at least 6 characters';
     }
 
-    if (formData.roleIds.length === 0) {
-      newErrors.roleIds = 'At least one role is required';
+    if (formData.role_ids.length === 0) {
+      newErrors.role_ids = 'At least one role is required';
     }
 
     setErrors(newErrors);
@@ -105,33 +164,49 @@ export const UserForm: React.FC<UserFormProps> = ({ user, onSave, onCancel }) =>
     setLoading(true);
     try {
       if (user) {
-        await mockApi.updateUser(user.id, formData);
+        // Update existing user
+        const updateData = { ...formData };
+        if (!updateData.password) {
+          delete updateData.password; // Don't send empty password
+        }
+        await updateUser(user.id!, updateData);
       } else {
-        await mockApi.createUser(formData as CreateUserRequest);
+        // Create new user
+        await createUser(formData);
       }
       onSave();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to save user:', error);
-      setErrors({ submit: 'Failed to save user. Please try again.' });
+      let errorMessage = 'Failed to save user. Please try again.';
+      
+      if (error.response?.status === 403) {
+        errorMessage = 'Access denied. You may not have permission to perform this action.';
+      } else if (error.response?.status === 401) {
+        errorMessage = 'Authentication failed. Please log in again.';
+      } else if (error.response?.data?.detail) {
+        errorMessage = error.response.data.detail;
+      }
+      
+      setErrors({ submit: errorMessage });
     } finally {
       setLoading(false);
     }
   };
 
-  const handleRoleChange = (roleId: string, checked: boolean) => {
+  const handleRoleChange = (roleId: number, checked: boolean) => {
     const newRoleIds = checked
-      ? [...formData.roleIds, roleId]
-      : formData.roleIds.filter(id => id !== roleId);
+      ? [...formData.role_ids, roleId]
+      : formData.role_ids.filter(id => id !== roleId);
     
-    setFormData(prev => ({ ...prev, roleIds: newRoleIds }));
+    setFormData(prev => ({ ...prev, role_ids: newRoleIds }));
   };
 
-  const handleGroupChange = (groupId: string, checked: boolean) => {
+  const handleGroupChange = (groupId: number, checked: boolean) => {
     const newGroupIds = checked
-      ? [...formData.groupIds, groupId]
-      : formData.groupIds.filter(id => id !== groupId);
+      ? [...formData.group_ids, groupId]
+      : formData.group_ids.filter(id => id !== groupId);
     
-    setFormData(prev => ({ ...prev, groupIds: newGroupIds }));
+    setFormData(prev => ({ ...prev, group_ids: newGroupIds }));
   };
 
   return (
@@ -139,6 +214,12 @@ export const UserForm: React.FC<UserFormProps> = ({ user, onSave, onCancel }) =>
       {errors.submit && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
           {errors.submit}
+        </div>
+      )}
+
+      {errors.roles && (
+        <div className="bg-yellow-50 border border-yellow-200 text-yellow-700 px-4 py-3 rounded">
+          {errors.roles}
         </div>
       )}
 
@@ -176,20 +257,36 @@ export const UserForm: React.FC<UserFormProps> = ({ user, onSave, onCancel }) =>
         </div>
       </div>
 
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          Password {!user && '*'}
-        </label>
-        <input
-          type="password"
-          value={formData.password}
-          onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
-          className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 ${
-            errors.password ? 'border-red-300' : 'border-gray-300'
-          }`}
-          placeholder={user ? "Leave blank to keep current password" : "Enter password"}
-        />
-        {errors.password && <p className="mt-1 text-sm text-red-600">{errors.password}</p>}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Password {!user && '*'}
+          </label>
+          <input
+            type="password"
+            value={formData.password}
+            onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
+            className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+              errors.password ? 'border-red-300' : 'border-gray-300'
+            }`}
+            placeholder={user ? "Leave blank to keep current password" : "Enter password"}
+          />
+          {errors.password && <p className="mt-1 text-sm text-red-600">{errors.password}</p>}
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Status
+          </label>
+          <select
+            value={formData.status}
+            onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value as 'active' | 'inactive' }))}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+        </div>
       </div>
 
       <div>
@@ -197,24 +294,30 @@ export const UserForm: React.FC<UserFormProps> = ({ user, onSave, onCancel }) =>
           Roles *
         </label>
         <div className={`border rounded-md p-3 max-h-32 overflow-y-auto ${
-          errors.roleIds ? 'border-red-300' : 'border-gray-300'
+          errors.role_ids ? 'border-red-300' : 'border-gray-300'
         }`}>
-          {roles.map(role => (
-            <label key={role.id} className="flex items-center py-1">
-              <input
-                type="checkbox"
-                checked={formData.roleIds.includes(role.id)}
-                onChange={(e) => handleRoleChange(role.id, e.target.checked)}
-                className="mr-2"
-              />
-              <span className="text-sm">
-                <span className="font-medium">{role.name}</span>
-                <span className="text-gray-500 ml-2">{role.description}</span>
-              </span>
-            </label>
-          ))}
+          {roles.length > 0 ? (
+            roles.map(role => (
+              <label key={role.id} className="flex items-center py-1">
+                <input
+                  type="checkbox"
+                  checked={formData.role_ids.includes(role.id)}
+                  onChange={(e) => handleRoleChange(role.id, e.target.checked)}
+                  className="mr-2"
+                />
+                <span className="text-sm">
+                  <span className="font-medium">{role.name}</span>
+                  <span className="text-gray-500 ml-2">{role.description}</span>
+                </span>
+              </label>
+            ))
+          ) : (
+            <div className="text-gray-500 text-sm py-2">
+              {loadingRoles ? 'Loading roles...' : (errors.roles ? 'Error loading roles' : 'No roles available')}
+            </div>
+          )}
         </div>
-        {errors.roleIds && <p className="mt-1 text-sm text-red-600">{errors.roleIds}</p>}
+        {errors.role_ids && <p className="mt-1 text-sm text-red-600">{errors.role_ids}</p>}
       </div>
 
       {availableGroups.length > 0 && (
@@ -227,7 +330,7 @@ export const UserForm: React.FC<UserFormProps> = ({ user, onSave, onCancel }) =>
               <label key={group.id} className="flex items-center py-1">
                 <input
                   type="checkbox"
-                  checked={formData.groupIds.includes(group.id)}
+                  checked={formData.group_ids.includes(group.id)}
                   onChange={(e) => handleGroupChange(group.id, e.target.checked)}
                   className="mr-2"
                 />

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Edit, Trash2, UserCheck } from 'lucide-react';
 import { Group } from '../../types';
-import { mockApi } from '../../services/mockApi';
+import { fetchGroups, createGroup, updateGroup, deleteGroup } from '../../services/api';
 import { Table } from '../common/Table';
 import { SearchInput } from '../common/SearchInput';
 import { GroupForm } from './GroupForm';
@@ -31,11 +31,11 @@ export const GroupList: React.FC = () => {
   const loadGroups = async () => {
     try {
       setLoading(true);
-      const data = await mockApi.getGroups();
+      const data = await fetchGroups();
       setGroups(data);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to load groups:', error);
-      showNotification('error', 'Failed to load groups');
+      showNotification('error', error.message || 'Failed to load groups');
     } finally {
       setLoading(false);
     }
@@ -50,20 +50,58 @@ export const GroupList: React.FC = () => {
     if (!window.confirm(`Are you sure you want to delete the group "${group.name}"?`)) return;
     
     try {
-      await mockApi.deleteGroup(group.id);
+      await deleteGroup(group.id);
       setGroups(groups.filter(g => g.id !== group.id));
       showNotification('success', 'Group deleted successfully');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to delete group:', error);
-      showNotification('error', 'Failed to delete group');
+      showNotification('error', error.message || 'Failed to delete group');
     }
   };
 
-  const handleGroupSaved = () => {
-    loadGroups();
-    setShowCreateModal(false);
-    setEditingGroup(null);
-    showNotification('success', editingGroup ? 'Group updated successfully' : 'Group created successfully');
+  const handleGroupSaved = async (groupData: any) => {
+    try {
+      console.log('Saving group data:', groupData);
+      
+      if (editingGroup) {
+        // Update existing group
+        const updatedGroup = await updateGroup(editingGroup.id, groupData);
+        setGroups(groups.map(g => g.id === editingGroup.id ? updatedGroup : g));
+        showNotification('success', 'Group updated successfully');
+      } else {
+        // Create new group
+        const newGroup = await createGroup(groupData);
+        setGroups([...groups, newGroup]);
+        showNotification('success', 'Group created successfully');
+      }
+      
+      setShowCreateModal(false);
+      setEditingGroup(null);
+      loadGroups();
+    } catch (error: any) {
+      console.error('Failed to save group:', error);
+      
+      let errorMessage = 'Failed to save group';
+      
+      // Handle validation errors
+      if (error.message && error.message.includes('Validation failed:')) {
+        try {
+          const validationData = JSON.parse(error.message.replace('Validation failed: ', ''));
+          if (validationData.errors) {
+            const fieldErrors = Object.entries(validationData.errors)
+              .map(([field, messages]) => `${field}: ${Array.isArray(messages) ? messages.join(', ') : messages}`)
+              .join('; ');
+            errorMessage = `Validation errors - ${fieldErrors}`;
+          }
+        } catch (parseError) {
+          errorMessage = error.message;
+        }
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      showNotification('error', errorMessage);
+    }
   };
 
   const columns = [
@@ -88,11 +126,11 @@ export const GroupList: React.FC = () => {
       render: (group: Group) => (
         <div>
           <div className="text-sm font-medium text-gray-900">
-            {group.applications.length} app{group.applications.length !== 1 ? 's' : ''}
+            {group.applications?.length || 0} app{(group.applications?.length || 0) !== 1 ? 's' : ''}
           </div>
           <div className="text-xs text-gray-500">
-            {group.applications.slice(0, 2).map(a => a.name).join(', ')}
-            {group.applications.length > 2 && ` +${group.applications.length - 2} more`}
+            {group.applications?.slice(0, 2).map(a => a.name).join(', ')}
+            {(group.applications?.length || 0) > 2 && ` +${(group.applications?.length || 0) - 2} more`}
           </div>
         </div>
       )
@@ -102,7 +140,7 @@ export const GroupList: React.FC = () => {
       header: 'Created',
       render: (group: Group) => (
         <div className="text-sm text-gray-600">
-          {new Date(group.createdAt).toLocaleDateString()}
+          {group.createdAt ? new Date(group.createdAt).toLocaleDateString() : 'N/A'}
         </div>
       )
     },

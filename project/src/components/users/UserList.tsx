@@ -1,43 +1,137 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Edit, Trash2, ToggleLeft, ToggleRight, Mail, Search } from 'lucide-react';
-import { User } from '../../types';
-import { mockApi } from '../../services/mockApi';
+import { User } from '../../types/types';
+import { fetchUsers, updateUser, fetchRoles, fetchGroups } from '../../services/api';
+import axios from 'axios';
 import { Table } from '../common/Table';
 import { StatusBadge } from '../common/StatusBadge';
 import { SearchInput } from '../common/SearchInput';
 import { UserForm } from './UserForm';
 import { Modal } from '../common/Modal';
 
+const API_BASE = 'http://localhost:8000/api/v1';
+
+const getAuthHeaders = () => {
+  const token = localStorage.getItem('access_token');
+  return {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+  };
+};
+
+interface Role {
+  id: number;
+  name?: string;
+  title?: string;
+  role_name?: string;
+  [key: string]: any; // Allow other properties
+}
+
+interface Group {
+  id: number;
+  name?: string;
+  title?: string;
+  group_name?: string;
+  [key: string]: any; // Allow other properties
+}
+
+// Updated User interface to match API response
+interface ApiUser {
+  id?: number;
+  name: string;
+  email: string;
+  password?: string;
+  status: 'active' | 'inactive';
+  roles: string[]; // Array of role names from API
+  group_ids?: number[]; // Keep this if groups still use IDs
+  created_at?: string;
+}
+
 export const UserList: React.FC = () => {
-  const [users, setUsers] = useState<User[]>([]);
-  const [filteredUsers, setFilteredUsers] = useState<User[]>([]);
+  const [users, setUsers] = useState<ApiUser[]>([]);
+  const [filteredUsers, setFilteredUsers] = useState<ApiUser[]>([]);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [editingUser, setEditingUser] = useState<ApiUser | null>(null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   useEffect(() => {
-    loadUsers();
+    loadData();
   }, []);
 
   useEffect(() => {
     const filtered = users.filter(user =>
       user.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      user.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      user.roles.some(role => role.name.toLowerCase().includes(searchQuery.toLowerCase()))
+      user.email.toLowerCase().includes(searchQuery.toLowerCase())
     );
     setFilteredUsers(filtered);
   }, [users, searchQuery]);
 
-  const loadUsers = async () => {
+  const loadData = async () => {
     try {
       setLoading(true);
-      const data = await mockApi.getUsers();
-      setUsers(data);
+      // Load users, roles, and groups concurrently
+      const [usersData, rolesData, groupsData] = await Promise.all([
+        fetchUsers(),
+        fetchRoles(),
+        fetchGroups()
+      ]);
+
+      console.log('Raw users response:', usersData);
+      console.log('Raw roles response:', rolesData);
+      console.log('Raw groups response:', groupsData);
+      
+      // Handle paginated response for users
+      let usersArray: ApiUser[] = [];
+      if (usersData && typeof usersData === 'object' && Array.isArray(usersData.results)) {
+        usersArray = usersData.results;
+      } else if (Array.isArray(usersData)) {
+        usersArray = usersData;
+      } else {
+        console.error('Users data is not in expected format:', usersData);
+        usersArray = [];
+      }
+
+      // Handle roles data with detailed logging
+      let rolesArray: Role[] = [];
+      if (Array.isArray(rolesData)) {
+        rolesArray = rolesData;
+      } else if (rolesData && typeof rolesData === 'object' && Array.isArray(rolesData.results)) {
+        rolesArray = rolesData.results;
+      } else {
+        console.error('Roles data is not in expected format:', rolesData);
+        rolesArray = [];
+      }
+
+      // Handle groups data with detailed logging
+      let groupsArray: Group[] = [];
+      if (Array.isArray(groupsData)) {
+        groupsArray = groupsData;
+      } else if (groupsData && typeof groupsData === 'object' && Array.isArray(groupsData.results)) {
+        groupsArray = groupsData.results;
+      } else {
+        console.error('Groups data is not in expected format:', groupsData);
+        groupsArray = [];
+      }
+      
+      setUsers(usersArray);
+      setRoles(rolesArray);
+      setGroups(groupsArray);
+      
+      console.log('Processed users:', usersArray);
+      console.log('Processed roles:', rolesArray);
+      console.log('Processed groups:', groupsArray);
     } catch (error) {
-      console.error('Failed to load users:', error);
-      showNotification('error', 'Failed to load users');
+      console.error('Failed to load data:', error);
+      showNotification('error', 'Failed to load data');
+      setUsers([]);
+      setRoles([]);
+      setGroups([]);
     } finally {
       setLoading(false);
     }
@@ -48,22 +142,38 @@ export const UserList: React.FC = () => {
     setTimeout(() => setNotification(null), 3000);
   };
 
-  const handleToggleStatus = async (user: User) => {
+  const handleToggleStatus = async (user: ApiUser) => {
     try {
-      const updatedUser = await mockApi.toggleUserStatus(user.id);
-      setUsers(users.map(u => u.id === user.id ? updatedUser : u));
-      showNotification('success', `User ${updatedUser.status === 'active' ? 'activated' : 'deactivated'} successfully`);
+      const newStatus = user.status === 'active' ? 'inactive' : 'active';
+      
+      // Convert ApiUser back to the format expected by updateUser API
+      const updatedUserData = { 
+        ...user, 
+        status: newStatus,
+        // Convert role names back to role_ids if your API expects that
+        role_ids: user.roles?.map(roleName => {
+          const role = roles.find(r => (r.name || r.title || r.role_name) === roleName);
+          return role?.id || 0;
+        }).filter(id => id > 0) || [],
+        group_ids: user.group_ids || []
+      };
+      
+      await updateUser(user.id!, updatedUserData);
+      
+      // Update local state
+      setUsers(users.map(u => u.id === user.id ? { ...u, status: newStatus } : u));
+      showNotification('success', `User ${newStatus === 'active' ? 'activated' : 'deactivated'} successfully`);
     } catch (error) {
       console.error('Failed to toggle user status:', error);
       showNotification('error', 'Failed to update user status');
     }
   };
 
-  const handleDeleteUser = async (user: User) => {
+  const handleDeleteUser = async (user: ApiUser) => {
     if (!window.confirm(`Are you sure you want to delete ${user.name}?`)) return;
     
     try {
-      await mockApi.deleteUser(user.id);
+      await axios.delete(`${API_BASE}/users/${user.id}/`, getAuthHeaders());
       setUsers(users.filter(u => u.id !== user.id));
       showNotification('success', 'User deleted successfully');
     } catch (error) {
@@ -72,18 +182,41 @@ export const UserList: React.FC = () => {
     }
   };
 
+  const handleSendInvite = async (user: ApiUser) => {
+    try {
+      await axios.post(`${API_BASE}/users/${user.id}/send-invite/`, {}, getAuthHeaders());
+      showNotification('success', 'Invite email sent successfully!');
+    } catch (error) {
+      console.error('Failed to send invite:', error);
+      showNotification('error', 'Failed to send invite');
+    }
+  };
+
   const handleUserSaved = () => {
-    loadUsers();
+    loadData(); // Reload all data including users, roles, and groups
     setShowCreateModal(false);
     setEditingUser(null);
     showNotification('success', editingUser ? 'User updated successfully' : 'User created successfully');
+  };
+
+  // Create a mapping from group ID to group name (if needed)
+  const getGroupName = (groupId: number): string => {
+    const group = groups.find(g => g.id === groupId);
+    if (group) {
+      return group.name || group.title || group.group_name || `Group ${groupId}`;
+    }
+    return `Group ${groupId}`;
+  };
+
+  const getGroupNames = (groupIds: number[] = []) => {
+    return groupIds.length > 0 ? groupIds.map(getGroupName).join(', ') : 'No groups';
   };
 
   const columns = [
     {
       key: 'name',
       header: 'Name',
-      render: (user: User) => (
+      render: (user: ApiUser) => (
         <div>
           <div className="font-medium text-gray-900">{user.name}</div>
           <div className="text-sm text-gray-500">{user.email}</div>
@@ -93,43 +226,37 @@ export const UserList: React.FC = () => {
     {
       key: 'roles',
       header: 'Roles',
-      render: (user: User) => (
+      render: (user: ApiUser) => (
         <div className="flex flex-wrap gap-1">
-          {user.roles.map(role => (
-            <span key={role.id} className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-              {role.name}
+          {(user.roles || []).map((roleName, index) => (
+            <span key={index} className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+              {roleName}
             </span>
           ))}
-        </div>
-      )
-    },
-    {
-      key: 'groups',
-      header: 'Groups',
-      render: (user: User) => (
-        <div className="text-sm text-gray-600">
-          {user.groups.length > 0 ? user.groups.map(g => g.name).join(', ') : 'No groups'}
+          {(!user.roles || user.roles.length === 0) && (
+            <span className="text-sm text-gray-500">No roles</span>
+          )}
         </div>
       )
     },
     {
       key: 'status',
       header: 'Status',
-      render: (user: User) => <StatusBadge status={user.status} />
+      render: (user: ApiUser) => <StatusBadge status={user.status} />
     },
     {
-      key: 'lastLogin',
-      header: 'Last Login',
-      render: (user: User) => (
+      key: 'created',
+      header: 'Created',
+      render: (user: ApiUser) => (
         <div className="text-sm text-gray-600">
-          {user.lastLogin ? new Date(user.lastLogin).toLocaleDateString() : 'Never'}
+          {user.created_at ? new Date(user.created_at).toLocaleDateString() : 'Unknown'}
         </div>
       )
     },
     {
       key: 'actions',
       header: 'Actions',
-      render: (user: User) => (
+      render: (user: ApiUser) => (
         <div className="flex items-center space-x-2">
           <button
             onClick={() => handleToggleStatus(user)}
@@ -153,7 +280,7 @@ export const UserList: React.FC = () => {
             <Trash2 size={16} />
           </button>
           <button
-            onClick={() => showNotification('success', 'Invite email sent!')}
+            onClick={() => handleSendInvite(user)}
             className="text-gray-400 hover:text-green-600 transition-colors"
             title="Send Invite"
           >
@@ -194,7 +321,7 @@ export const UserList: React.FC = () => {
           <SearchInput
             value={searchQuery}
             onChange={setSearchQuery}
-            placeholder="Search users by name, email, or role..."
+            placeholder="Search users by name or email..."
             className="max-w-md"
           />
         </div>
@@ -229,7 +356,7 @@ export const UserList: React.FC = () => {
       >
         {editingUser && (
           <UserForm
-            user={editingUser}
+            user={editingUser as any} // You may need to convert this back to User type
             onSave={handleUserSaved}
             onCancel={() => setEditingUser(null)}
           />

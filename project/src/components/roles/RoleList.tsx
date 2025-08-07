@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Edit, Trash2, Shield } from 'lucide-react';
 import { Role } from '../../types';
-import { mockApi } from '../../services/mockApi';
+import { fetchRoles, deleteRole } from '../../services/api';
 import { Table } from '../common/Table';
 import { SearchInput } from '../common/SearchInput';
 import { RoleForm } from './RoleForm';
@@ -31,7 +31,7 @@ export const RoleList: React.FC = () => {
   const loadRoles = async () => {
     try {
       setLoading(true);
-      const data = await mockApi.getRoles();
+      const data = await fetchRoles();
       setRoles(data);
     } catch (error) {
       console.error('Failed to load roles:', error);
@@ -50,7 +50,7 @@ export const RoleList: React.FC = () => {
     if (!window.confirm(`Are you sure you want to delete the role "${role.name}"?`)) return;
     
     try {
-      await mockApi.deleteRole(role.id);
+      await deleteRole(role.id);
       setRoles(roles.filter(r => r.id !== role.id));
       showNotification('success', 'Role deleted successfully');
     } catch (error) {
@@ -64,6 +64,32 @@ export const RoleList: React.FC = () => {
     setShowCreateModal(false);
     setEditingRole(null);
     showNotification('success', editingRole ? 'Role updated successfully' : 'Role created successfully');
+  };
+
+  // Helper function to format date with more options
+  const formatDate = (dateString: string | undefined | null): string => {
+    if (!dateString) return 'N/A';
+    
+    try {
+      const date = new Date(dateString);
+      
+      // Check if date is valid
+      if (isNaN(date.getTime())) return 'Invalid Date';
+      
+      // Format with more detail - you can customize this
+      const options: Intl.DateTimeFormatOptions = {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      };
+      
+      return date.toLocaleDateString('en-US', options);
+    } catch (error) {
+      console.error('Error formatting date:', dateString, error);
+      return 'Invalid Date';
+    }
   };
 
   const columns = [
@@ -85,41 +111,70 @@ export const RoleList: React.FC = () => {
     {
       key: 'groups',
       header: 'Groups',
-      render: (role: Role) => (
-        <div>
-          <div className="text-sm font-medium text-gray-900">
-            {role.groups.length} group{role.groups.length !== 1 ? 's' : ''}
+      render: (role: Role) => {
+        const groups = role.groups || [];
+        return (
+          <div>
+            <div className="text-sm font-medium text-gray-900">
+              {groups.length} group{groups.length !== 1 ? 's' : ''}
+            </div>
+            <div className="text-xs text-gray-500">
+              {groups.length > 0 ? (
+                <>
+                  {groups.slice(0, 2).map(g => g.name).join(', ')}
+                  {groups.length > 2 && ` +${groups.length - 2} more`}
+                </>
+              ) : (
+                'No groups assigned'
+              )}
+            </div>
           </div>
-          <div className="text-xs text-gray-500">
-            {role.groups.slice(0, 2).map(g => g.name).join(', ')}
-            {role.groups.length > 2 && ` +${role.groups.length - 2} more`}
-          </div>
-        </div>
-      )
+        );
+      }
     },
     {
       key: 'permissions',
       header: 'Permissions',
-      render: (role: Role) => (
-        <div>
-          <div className="text-sm font-medium text-gray-900">
-            {role.permissions.length} permission{role.permissions.length !== 1 ? 's' : ''}
+      render: (role: Role) => {
+        const permissions = role.permissions || [];
+        return (
+          <div>
+            <div className="text-sm font-medium text-gray-900">
+              {permissions.length} permission{permissions.length !== 1 ? 's' : ''}
+            </div>
+            <div className="text-xs text-gray-500">
+              {permissions.length > 0 ? (
+                <>
+                  {permissions.slice(0, 2).map(p => p.name).join(', ')}
+                  {permissions.length > 2 && ` +${permissions.length - 2} more`}
+                </>
+              ) : (
+                'No permissions assigned'
+              )}
+            </div>
           </div>
-          <div className="text-xs text-gray-500">
-            {role.permissions.slice(0, 2).map(p => p.name).join(', ')}
-            {role.permissions.length > 2 && ` +${role.permissions.length - 2} more`}
-          </div>
-        </div>
-      )
+        );
+      }
     },
     {
       key: 'createdAt',
       header: 'Created',
-      render: (role: Role) => (
-        <div className="text-sm text-gray-600">
-          {new Date(role.createdAt).toLocaleDateString()}
-        </div>
-      )
+      render: (role: Role) => {
+        // Try both camelCase and snake_case field names
+        const createdAt = (role as any).created_at || role.createdAt || (role as any).createdAt;
+        
+        return (
+          <div className="text-sm text-gray-600">
+            <div>{formatDate(createdAt)}</div>
+            {/* Optional: Show relative time as well */}
+            {createdAt && (
+              <div className="text-xs text-gray-400 mt-1">
+                {getRelativeTime(createdAt)}
+              </div>
+            )}
+          </div>
+        );
+      }
     },
     {
       key: 'actions',
@@ -144,6 +199,23 @@ export const RoleList: React.FC = () => {
       )
     }
   ];
+
+  // Helper function to get relative time (e.g., "2 hours ago")
+  const getRelativeTime = (dateString: string): string => {
+    try {
+      const date = new Date(dateString);
+      const now = new Date();
+      const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+      
+      if (diffInSeconds < 60) return 'Just now';
+      if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+      if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+      if (diffInSeconds < 604800) return `${Math.floor(diffInSeconds / 86400)}d ago`;
+      return `${Math.floor(diffInSeconds / 604800)}w ago`;
+    } catch {
+      return '';
+    }
+  };
 
   return (
     <div className="p-6">

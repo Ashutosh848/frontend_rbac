@@ -18,7 +18,7 @@ const mockApplications: Application[] = [
     url: 'https://portal.example.com',
     groups: [],
     createdAt: '2024-01-15T10:00:00Z'
-  },
+  },  
   {
     id: '2',
     name: 'Analytics Dashboard',
