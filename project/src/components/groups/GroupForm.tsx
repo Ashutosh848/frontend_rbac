@@ -34,15 +34,39 @@ export const GroupForm: React.FC<GroupFormProps> = ({ group, onSave, onCancel })
     }
 
     loadApplications();
-    
-    if (group) {
+  }, []);
+
+  // Separate effect for initializing form data after applications are loaded
+  useEffect(() => {
+    if (group && applications.length > 0) {
+      console.log('Initializing form with group:', group);
+      console.log('Available applications:', applications);
+      
+      // Convert application_names to applicationIds
+      let selectedApplicationIds: number[] = [];
+      
+      if (group.application_names && group.application_names.length > 0) {
+        // Find application IDs based on application names
+        selectedApplicationIds = applications
+          .filter(app => group.application_names?.includes(app.name))
+          .map(app => app.id);
+        
+        console.log('Mapped application_names to IDs:', {
+          application_names: group.application_names,
+          selectedApplicationIds
+        });
+      } else if (group.applications && group.applications.length > 0) {
+        // Fallback for old format
+        selectedApplicationIds = group.applications.map(a => a.id);
+      }
+
       setFormData({
         name: group.name,
         description: group.description,
-        applicationIds: group.applications?.map(a => a.id) || []
+        applicationIds: selectedApplicationIds
       });
     }
-  }, [group]);
+  }, [group, applications]);
 
   const loadApplications = async () => {
     try {
@@ -135,6 +159,7 @@ export const GroupForm: React.FC<GroupFormProps> = ({ group, onSave, onCancel })
           'name': 'name',
           'description': 'description',
           'application_ids': 'applicationIds',
+          'application_names': 'applicationIds',
           'applications': 'applicationIds',
           'applicationIds': 'applicationIds'
         };
@@ -220,20 +245,23 @@ export const GroupForm: React.FC<GroupFormProps> = ({ group, onSave, onCancel })
     setLoading(true);
     
     try {
+      // Convert applicationIds to application_names for API
+      const selectedApplicationNames = applications
+        .filter(app => formData.applicationIds.includes(app.id))
+        .map(app => app.name);
+
       const submitData = {
         name: formData.name.trim(),
         description: formData.description.trim(),
-        applicationIds: formData.applicationIds
+        application_names: selectedApplicationNames
       };
 
-      console.log('Submitting group data:', submitData);
+      console.log('=== FORM SUBMIT DEBUG ===');
+      console.log('Form applicationIds:', formData.applicationIds);
+      console.log('Selected applications:', applications.filter(app => formData.applicationIds.includes(app.id)));
+      console.log('Converted application_names:', selectedApplicationNames);
+      console.log('Final submit data:', submitData);
 
-      // if (group) {
-      //   await updatationGroup(group.id, submitData);
-      // } else {
-      //   await creationGroup(submitData as CreateGroupRequest);
-      // }
-      
       // Success - call onSave callback
       onSave(submitData);
     } catch (error: any) {

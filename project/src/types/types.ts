@@ -15,9 +15,12 @@ export interface Group {
   id: number;
   name: string;
   description: string;
-  created_at?: string;
-  updated_at?: string;
-  applications?: Application[];
+  created_at?: string;        // API field name
+  updated_at?: string;        // API field name
+  createdAt?: string;         // Processed field name (for backward compatibility)
+  updatedAt?: string;         // Processed field name (for backward compatibility)
+  application_names?: string[]; // New field from API
+  applications?: Application[]; // Existing field for backward compatibility
 }
 
 export interface User {

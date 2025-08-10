@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Edit, Trash2, ToggleLeft, ToggleRight, Mail, Search } from 'lucide-react';
+import { Plus, Edit, Trash2, ToggleLeft, ToggleRight, Mail, Search, X, Check } from 'lucide-react';
 import { User } from '../../types/types';
 import { fetchUsers, updateUser, fetchRoles, fetchGroups } from '../../services/api';
 import axios from 'axios';
@@ -26,7 +26,7 @@ interface Role {
   name?: string;
   title?: string;
   role_name?: string;
-  [key: string]: any; // Allow other properties
+  [key: string]: any;
 }
 
 interface Group {
@@ -34,18 +34,17 @@ interface Group {
   name?: string;
   title?: string;
   group_name?: string;
-  [key: string]: any; // Allow other properties
+  [key: string]: any;
 }
 
-// Updated User interface to match API response
 interface ApiUser {
   id?: number;
   name: string;
   email: string;
   password?: string;
   status: 'active' | 'inactive';
-  roles: string[]; // Array of role names from API
-  group_ids?: number[]; // Keep this if groups still use IDs
+  roles: string[];
+  group_ids?: number[];
   created_at?: string;
 }
 
@@ -58,6 +57,8 @@ export const UserList: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingUser, setEditingUser] = useState<ApiUser | null>(null);
+  const [showRoleModal, setShowRoleModal] = useState(false);
+  const [selectedUserForRoles, setSelectedUserForRoles] = useState<ApiUser | null>(null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   useEffect(() => {
@@ -75,7 +76,6 @@ export const UserList: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      // Load users, roles, and groups concurrently
       const [usersData, rolesData, groupsData] = await Promise.all([
         fetchUsers(),
         fetchRoles(),
@@ -86,7 +86,6 @@ export const UserList: React.FC = () => {
       console.log('Raw roles response:', rolesData);
       console.log('Raw groups response:', groupsData);
       
-      // Handle paginated response for users
       let usersArray: ApiUser[] = [];
       if (usersData && typeof usersData === 'object' && Array.isArray(usersData.results)) {
         usersArray = usersData.results;
@@ -97,7 +96,6 @@ export const UserList: React.FC = () => {
         usersArray = [];
       }
 
-      // Handle roles data with detailed logging
       let rolesArray: Role[] = [];
       if (Array.isArray(rolesData)) {
         rolesArray = rolesData;
@@ -108,7 +106,6 @@ export const UserList: React.FC = () => {
         rolesArray = [];
       }
 
-      // Handle groups data with detailed logging
       let groupsArray: Group[] = [];
       if (Array.isArray(groupsData)) {
         groupsArray = groupsData;
@@ -142,15 +139,54 @@ export const UserList: React.FC = () => {
     setTimeout(() => setNotification(null), 3000);
   };
 
+  // Helper function to format date (same as RoleList)
+  const formatDate = (dateString: string | undefined | null): string => {
+    if (!dateString) return 'N/A';
+    
+    try {
+      const date = new Date(dateString);
+      
+      if (isNaN(date.getTime())) return 'Invalid Date';
+      
+      const options: Intl.DateTimeFormatOptions = {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      };
+      
+      return date.toLocaleDateString('en-US', options);
+    } catch (error) {
+      console.error('Error formatting date:', dateString, error);
+      return 'Invalid Date';
+    }
+  };
+
+  // Helper function to get relative time (same as RoleList)
+  const getRelativeTime = (dateString: string): string => {
+    try {
+      const date = new Date(dateString);
+      const now = new Date();
+      const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+      
+      if (diffInSeconds < 60) return 'Just now';
+      if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+      if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+      if (diffInSeconds < 604800) return `${Math.floor(diffInSeconds / 86400)}d ago`;
+      return `${Math.floor(diffInSeconds / 604800)}w ago`;
+    } catch {
+      return '';
+    }
+  };
+
   const handleToggleStatus = async (user: ApiUser) => {
     try {
       const newStatus = user.status === 'active' ? 'inactive' : 'active';
       
-      // Convert ApiUser back to the format expected by updateUser API
       const updatedUserData = { 
         ...user, 
         status: newStatus,
-        // Convert role names back to role_ids if your API expects that
         role_ids: user.roles?.map(roleName => {
           const role = roles.find(r => (r.name || r.title || r.role_name) === roleName);
           return role?.id || 0;
@@ -160,7 +196,6 @@ export const UserList: React.FC = () => {
       
       await updateUser(user.id!, updatedUserData);
       
-      // Update local state
       setUsers(users.map(u => u.id === user.id ? { ...u, status: newStatus } : u));
       showNotification('success', `User ${newStatus === 'active' ? 'activated' : 'deactivated'} successfully`);
     } catch (error) {
@@ -193,13 +228,55 @@ export const UserList: React.FC = () => {
   };
 
   const handleUserSaved = () => {
-    loadData(); // Reload all data including users, roles, and groups
+    loadData();
     setShowCreateModal(false);
     setEditingUser(null);
     showNotification('success', editingUser ? 'User updated successfully' : 'User created successfully');
   };
 
-  // Create a mapping from group ID to group name (if needed)
+  const handleManageRoles = (user: ApiUser) => {
+    setSelectedUserForRoles(user);
+    setShowRoleModal(true);
+  };
+
+  const handleRoleToggle = async (roleName: string) => {
+    if (!selectedUserForRoles) return;
+
+    try {
+      const currentRoles = selectedUserForRoles.roles || [];
+      const updatedRoles = currentRoles.includes(roleName)
+        ? currentRoles.filter(r => r !== roleName)
+        : [...currentRoles, roleName];
+
+      const updatedUserData = {
+        ...selectedUserForRoles,
+        roles: updatedRoles,
+        role_ids: updatedRoles.map(roleName => {
+          const role = roles.find(r => (r.name || r.title || r.role_name) === roleName);
+          return role?.id || 0;
+        }).filter(id => id > 0),
+        group_ids: selectedUserForRoles.group_ids || []
+      };
+
+      await updateUser(selectedUserForRoles.id!, updatedUserData);
+      
+      // Update local state
+      const updatedUsers = users.map(u => 
+        u.id === selectedUserForRoles.id 
+          ? { ...u, roles: updatedRoles }
+          : u
+      );
+      
+      setUsers(updatedUsers);
+      setSelectedUserForRoles({ ...selectedUserForRoles, roles: updatedRoles });
+      
+      showNotification('success', `Role ${currentRoles.includes(roleName) ? 'removed' : 'added'} successfully`);
+    } catch (error) {
+      console.error('Failed to update user roles:', error);
+      showNotification('error', 'Failed to update user roles');
+    }
+  };
+
   const getGroupName = (groupId: number): string => {
     const group = groups.find(g => g.id === groupId);
     if (group) {
@@ -227,15 +304,23 @@ export const UserList: React.FC = () => {
       key: 'roles',
       header: 'Roles',
       render: (user: ApiUser) => (
-        <div className="flex flex-wrap gap-1">
-          {(user.roles || []).map((roleName, index) => (
-            <span key={index} className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-              {roleName}
-            </span>
-          ))}
-          {(!user.roles || user.roles.length === 0) && (
-            <span className="text-sm text-gray-500">No roles</span>
-          )}
+        <div>
+          <div className="flex flex-wrap gap-1 mb-2">
+            {(user.roles || []).map((roleName, index) => (
+              <span key={index} className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                {roleName}
+              </span>
+            ))}
+            {(!user.roles || user.roles.length === 0) && (
+              <span className="text-sm text-gray-500">No roles</span>
+            )}
+          </div>
+          <button
+            onClick={() => handleManageRoles(user)}
+            className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+          >
+            Manage Roles
+          </button>
         </div>
       )
     },
@@ -247,11 +332,20 @@ export const UserList: React.FC = () => {
     {
       key: 'created',
       header: 'Created',
-      render: (user: ApiUser) => (
-        <div className="text-sm text-gray-600">
-          {user.created_at ? new Date(user.created_at).toLocaleDateString() : 'Unknown'}
-        </div>
-      )
+      render: (user: ApiUser) => {
+        const createdAt = user.created_at;
+        
+        return (
+          <div className="text-sm text-gray-600">
+            <div>{formatDate(createdAt)}</div>
+            {createdAt && (
+              <div className="text-xs text-gray-400 mt-1">
+                {getRelativeTime(createdAt)}
+              </div>
+            )}
+          </div>
+        );
+      }
     },
     {
       key: 'actions',
@@ -356,10 +450,72 @@ export const UserList: React.FC = () => {
       >
         {editingUser && (
           <UserForm
-            user={editingUser as any} // You may need to convert this back to User type
+            user={editingUser as any}
             onSave={handleUserSaved}
             onCancel={() => setEditingUser(null)}
           />
+        )}
+      </Modal>
+
+      {/* Role Management Modal */}
+      <Modal
+        isOpen={showRoleModal}
+        onClose={() => setShowRoleModal(false)}
+        title={`Manage Roles - ${selectedUserForRoles?.name}`}
+        size="md"
+      >
+        {selectedUserForRoles && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600 mb-4">
+              Select or deselect roles for {selectedUserForRoles.name}
+            </p>
+            
+            <div className="max-h-96 overflow-y-auto space-y-2">
+              {roles.map((role) => {
+                const roleName = role.name || role.title || role.role_name || `Role ${role.id}`;
+                const isAssigned = (selectedUserForRoles.roles || []).includes(roleName);
+                
+                return (
+                  <div
+                    key={role.id}
+                    className="flex items-center justify-between p-3 border rounded-lg hover:bg-gray-50 cursor-pointer"
+                    onClick={() => handleRoleToggle(roleName)}
+                  >
+                    <div className="flex items-center space-x-3">
+                      <div className={`w-5 h-5 border-2 rounded flex items-center justify-center ${
+                        isAssigned 
+                          ? 'bg-blue-600 border-blue-600 text-white' 
+                          : 'border-gray-300 bg-white'
+                      }`}>
+                        {isAssigned && <Check size={12} />}
+                      </div>
+                      <div>
+                        <div className="font-medium text-gray-900">{roleName}</div>
+                        {(role as any).description && (
+                          <div className="text-sm text-gray-500">{(role as any).description}</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {roles.length === 0 && (
+              <div className="text-center py-8 text-gray-500">
+                No roles available
+              </div>
+            )}
+
+            <div className="flex justify-end space-x-2 pt-4 border-t">
+              <button
+                onClick={() => setShowRoleModal(false)}
+                className="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         )}
       </Modal>
     </div>

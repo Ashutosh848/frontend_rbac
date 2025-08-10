@@ -1,23 +1,35 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Edit, Trash2, UserCheck } from 'lucide-react';
+import { Plus, Edit, Trash2, UserCheck, Check } from 'lucide-react';
 import { Group } from '../../types';
-import { fetchGroups, createGroup, updateGroup, deleteGroup } from '../../services/api';
+import { fetchGroups, createGroup, updateGroup, deleteGroup, fetchApplications } from '../../services/api';
 import { Table } from '../common/Table';
 import { SearchInput } from '../common/SearchInput';
 import { GroupForm } from './GroupForm';
 import { Modal } from '../common/Modal';
 
+interface Application {
+  id: number;
+  name?: string;
+  title?: string;
+  app_name?: string;
+  description?: string;
+  [key: string]: any;
+}
+
 export const GroupList: React.FC = () => {
   const [groups, setGroups] = useState<Group[]>([]);
   const [filteredGroups, setFilteredGroups] = useState<Group[]>([]);
+  const [applications, setApplications] = useState<Application[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingGroup, setEditingGroup] = useState<Group | null>(null);
+  const [showApplicationModal, setShowApplicationModal] = useState(false);
+  const [selectedGroupForApps, setSelectedGroupForApps] = useState<Group | null>(null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   useEffect(() => {
-    loadGroups();
+    loadData();
   }, []);
 
   useEffect(() => {
@@ -28,14 +40,50 @@ export const GroupList: React.FC = () => {
     setFilteredGroups(filtered);
   }, [groups, searchQuery]);
 
-  const loadGroups = async () => {
+  const loadData = async () => {
     try {
       setLoading(true);
-      const data = await fetchGroups();
-      setGroups(data);
-    } catch (error: any) {
-      console.error('Failed to load groups:', error);
-      showNotification('error', error.message || 'Failed to load groups');
+      // Load groups and applications concurrently
+      const [groupsData, applicationsData] = await Promise.all([
+        fetchGroups(),
+        fetchApplications()
+      ]);
+
+      console.log('Raw groups response:', groupsData);
+      console.log('Raw applications response:', applicationsData);
+      
+      // Handle groups data
+      let groupsArray: Group[] = [];
+      if (Array.isArray(groupsData)) {
+        groupsArray = groupsData;
+      } else if (groupsData && typeof groupsData === 'object' && Array.isArray(groupsData.results)) {
+        groupsArray = groupsData.results;
+      } else {
+        console.error('Groups data is not in expected format:', groupsData);
+        groupsArray = [];
+      }
+
+      // Handle applications data
+      let applicationsArray: Application[] = [];
+      if (Array.isArray(applicationsData)) {
+        applicationsArray = applicationsData;
+      } else if (applicationsData && typeof applicationsData === 'object' && Array.isArray(applicationsData.results)) {
+        applicationsArray = applicationsData.results;
+      } else {
+        console.error('Applications data is not in expected format:', applicationsData);
+        applicationsArray = [];
+      }
+      
+      setGroups(groupsArray);
+      setApplications(applicationsArray);
+      
+      console.log('Processed groups:', groupsArray);
+      console.log('Processed applications:', applicationsArray);
+    } catch (error) {
+      console.error('Failed to load data:', error);
+      showNotification('error', 'Failed to load data');
+      setGroups([]);
+      setApplications([]);
     } finally {
       setLoading(false);
     }
@@ -61,25 +109,46 @@ export const GroupList: React.FC = () => {
 
   const handleGroupSaved = async (groupData: any) => {
     try {
+      console.log('=== GROUP SAVE DEBUG ===');
       console.log('Saving group data:', groupData);
+      console.log('GroupData keys:', Object.keys(groupData));
+      console.log('application_names in groupData:', groupData.application_names);
+      console.log('applications in groupData:', groupData.applications);
+      console.log('editingGroup:', editingGroup);
       
       if (editingGroup) {
         // Update existing group
+        console.log('Updating group with ID:', editingGroup.id);
+        console.log('Update payload:', groupData);
+        
         const updatedGroup = await updateGroup(editingGroup.id, groupData);
-        setGroups(groups.map(g => g.id === editingGroup.id ? updatedGroup : g));
+        console.log('API response for update:', updatedGroup);
+        
         showNotification('success', 'Group updated successfully');
+        
       } else {
         // Create new group
+        console.log('Creating new group:', groupData);
         const newGroup = await createGroup(groupData);
-        setGroups([...groups, newGroup]);
+        console.log('API response for create:', newGroup);
+        
         showNotification('success', 'Group created successfully');
       }
       
+      // Close modals
       setShowCreateModal(false);
       setEditingGroup(null);
-      loadGroups();
+      
+      // Always reload groups after any operation to ensure consistency
+      await loadData();
+      
     } catch (error: any) {
       console.error('Failed to save group:', error);
+      console.error('Error details:', {
+        message: error.message,
+        status: error.status,
+        response: error.response
+      });
       
       let errorMessage = 'Failed to save group';
       
@@ -104,10 +173,109 @@ export const GroupList: React.FC = () => {
     }
   };
 
+  const handleManageApplications = (group: Group) => {
+    setSelectedGroupForApps(group);
+    setShowApplicationModal(true);
+  };
+
+  const handleApplicationToggle = async (applicationId: number) => {
+    if (!selectedGroupForApps) return;
+
+    try {
+      // Get current application IDs from the group - handle multiple possible formats
+      const currentAppIds = (selectedGroupForApps.applications || []).map(a => 
+        typeof a === 'object' ? a.id : a
+      ).concat(selectedGroupForApps.application_ids || []);
+      
+      // Remove duplicates
+      const uniqueCurrentAppIds = [...new Set(currentAppIds)];
+      
+      // Toggle the application
+      const updatedAppIds = uniqueCurrentAppIds.includes(applicationId)
+        ? uniqueCurrentAppIds.filter(id => id !== applicationId)
+        : [...uniqueCurrentAppIds, applicationId];
+
+      // Prepare the update data - you might need to adjust this based on your API structure
+      const updatedGroupData = {
+        name: selectedGroupForApps.name,
+        description: selectedGroupForApps.description,
+        application_ids: updatedAppIds,
+        // Include any other required fields based on your API
+      };
+
+      await updateGroup(selectedGroupForApps.id, updatedGroupData);
+      
+      // Update local state - get the updated applications
+      const updatedApplications = applications.filter(a => updatedAppIds.includes(a.id));
+      const updatedGroup = {
+        ...selectedGroupForApps,
+        applications: updatedApplications,
+        application_ids: updatedAppIds,
+        application_names: updatedApplications.map(a => a.name || a.title || a.app_name || `App ${a.id}`)
+      };
+      
+      // Update the groups list
+      const updatedGroups = groups.map(g => 
+        g.id === selectedGroupForApps.id ? updatedGroup : g
+      );
+      
+      setGroups(updatedGroups);
+      setSelectedGroupForApps(updatedGroup);
+      
+      showNotification('success', `Application ${uniqueCurrentAppIds.includes(applicationId) ? 'removed' : 'assigned'} successfully`);
+    } catch (error) {
+      console.error('Failed to update group applications:', error);
+      showNotification('error', 'Failed to update group applications');
+    }
+  };
+
+  // Helper function to format date with more options
+  const formatDate = (dateString: string | undefined | null): string => {
+    if (!dateString) return 'N/A';
+    
+    try {
+      const date = new Date(dateString);
+      
+      // Check if date is valid
+      if (isNaN(date.getTime())) return 'Invalid Date';
+      
+      // Format with more detail - you can customize this
+      const options: Intl.DateTimeFormatOptions = {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      };
+      
+      return date.toLocaleDateString('en-US', options);
+    } catch (error) {
+      console.error('Error formatting date:', dateString, error);
+      return 'Invalid Date';
+    }
+  };
+
+  // Helper function to get relative time (e.g., "2 hours ago")
+  const getRelativeTime = (dateString: string): string => {
+    try {
+      const date = new Date(dateString);
+      const now = new Date();
+      const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+      
+      if (diffInSeconds < 60) return 'Just now';
+      if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+      if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+      if (diffInSeconds < 604800) return `${Math.floor(diffInSeconds / 86400)}d ago`;
+      return `${Math.floor(diffInSeconds / 604800)}w ago`;
+    } catch {
+      return '';
+    }
+  };
+
   const columns = [
     {
       key: 'name',
-      header: 'Group Name',
+      header: <span className="font-bold">Group Name</span>,
       render: (group: Group) => (
         <div className="flex items-center">
           <div className="p-2 bg-purple-100 rounded-lg mr-3">
@@ -122,31 +290,56 @@ export const GroupList: React.FC = () => {
     },
     {
       key: 'applications',
-      header: 'Applications',
-      render: (group: Group) => (
-        <div>
-          <div className="text-sm font-medium text-gray-900">
-            {group.applications?.length || 0} app{(group.applications?.length || 0) !== 1 ? 's' : ''}
+      header: <span className="font-bold">Applications</span>,
+      render: (group: Group) => {
+        // Handle both possible response formats
+        const applicationNames = group.application_names || group.applications?.map(a => a.name || a.title || a.app_name || `App ${a.id}`) || [];
+        
+        return (
+          <div>
+            <div className="flex flex-wrap gap-1 mb-2">
+              {applicationNames.map((appName, index) => (
+                <span key={index} className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                  {appName}
+                </span>
+              ))}
+              {applicationNames.length === 0 && (
+                <span className="text-sm text-gray-500">No applications</span>
+              )}
+            </div>
+            <button
+              onClick={() => handleManageApplications(group)}
+              className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+            >
+              Manage Applications
+            </button>
           </div>
-          <div className="text-xs text-gray-500">
-            {group.applications?.slice(0, 2).map(a => a.name).join(', ')}
-            {(group.applications?.length || 0) > 2 && ` +${(group.applications?.length || 0) - 2} more`}
-          </div>
-        </div>
-      )
+        );
+      }
     },
     {
       key: 'createdAt',
-      header: 'Created',
-      render: (group: Group) => (
-        <div className="text-sm text-gray-600">
-          {group.createdAt ? new Date(group.createdAt).toLocaleDateString() : 'N/A'}
-        </div>
-      )
+      header: <span className="font-bold">Created</span>,
+      render: (group: Group) => {
+        // Handle both created_at (API response) and createdAt (processed data)
+        const createdAt = group.created_at || group.createdAt;
+        
+        return (
+          <div className="text-sm text-gray-600">
+            <div>{formatDate(createdAt)}</div>
+            {/* Optional: Show relative time as well */}
+            {createdAt && (
+              <div className="text-xs text-gray-400 mt-1">
+                {getRelativeTime(createdAt)}
+              </div>
+            )}
+          </div>
+        );
+      }
     },
     {
       key: 'actions',
-      header: 'Actions',
+      header: <span className="font-bold">Actions</span>,
       render: (group: Group) => (
         <div className="flex items-center space-x-2">
           <button
@@ -237,6 +430,87 @@ export const GroupList: React.FC = () => {
             onSave={handleGroupSaved}
             onCancel={() => setEditingGroup(null)}
           />
+        )}
+      </Modal>
+
+      {/* Application Management Modal */}
+      <Modal
+        isOpen={showApplicationModal}
+        onClose={() => setShowApplicationModal(false)}
+        title={`Manage Applications - ${selectedGroupForApps?.name}`}
+        size="md"
+      >
+        {selectedGroupForApps && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600 mb-4">
+              Select or deselect applications for the "{selectedGroupForApps.name}" group
+            </p>
+            
+            <div className="max-h-96 overflow-y-auto space-y-2">
+              {applications.map((application) => {
+                const appName = application.name || application.title || application.app_name || `App ${application.id}`;
+                
+                // Enhanced assignment check - handle multiple possible data formats
+                console.log('Debug application assignment:', {
+                  applicationId: application.id,
+                  appName: appName,
+                  groupApplications: selectedGroupForApps.applications,
+                  groupAppNames: selectedGroupForApps.application_names,
+                  groupAppIds: selectedGroupForApps.application_ids
+                });
+
+                // Check if application is assigned using multiple methods
+                const isAssigned = 
+                  // Check in applications array (objects with id)
+                  (selectedGroupForApps.applications || []).some(a => 
+                    (typeof a === 'object' && a.id === application.id) || a === application.id
+                  ) ||
+                  // Check in application_ids array
+                  (selectedGroupForApps.application_ids || []).includes(application.id) ||
+                  // Check in application_names array
+                  (selectedGroupForApps.application_names || []).includes(appName);
+                
+                return (
+                  <div
+                    key={application.id}
+                    className="flex items-center justify-between p-3 border rounded-lg hover:bg-gray-50 cursor-pointer"
+                    onClick={() => handleApplicationToggle(application.id)}
+                  >
+                    <div className="flex items-center space-x-3">
+                      <div className={`w-5 h-5 border-2 rounded flex items-center justify-center ${
+                        isAssigned 
+                          ? 'bg-blue-600 border-blue-600 text-white' 
+                          : 'border-gray-300 bg-white'
+                      }`}>
+                        {isAssigned && <Check size={12} />}
+                      </div>
+                      <div>
+                        <div className="font-medium text-gray-900">{appName}</div>
+                        {application.description && (
+                          <div className="text-sm text-gray-500">{application.description}</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {applications.length === 0 && (
+              <div className="text-center py-8 text-gray-500">
+                No applications available
+              </div>
+            )}
+
+            <div className="flex justify-end space-x-2 pt-4 border-t">
+              <button
+                onClick={() => setShowApplicationModal(false)}
+                className="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         )}
       </Modal>
     </div>
